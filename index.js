@@ -23,8 +23,8 @@ class Rest {
   }
 
   async #parseContent(res) {
-    if (res.status == 500) console.log(await res.json());
-    return res.ok && res.status !== 204 && res.json();
+    if (!res.ok) throw Object.assign(new Error(res.status), { response: res });
+    return res.status !== 204 && res.json();
   }
 
   async post(ep, data) {
