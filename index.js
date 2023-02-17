@@ -1,3 +1,7 @@
+const WebSocket = require('ws');
+const EventEmitter = require('events');
+
+
 class Rest {
   constructor(base, token) {
     this.base = base;
@@ -23,7 +27,7 @@ class Rest {
   }
 
   async #parseContent(res) {
-    if (!res.ok) throw Object.assign(new Error(res.status), { response: res });
+    if (!res.ok) throw Object.assign(new Error(res.status), await res.json());
     return res.status !== 204 && res.json();
   }
 
@@ -51,11 +55,139 @@ class Rest {
 }
 
 
-class Client {
+const Events = {
+  Init: 'INIT',
+  GuildAdd: 'GUILD_ADD',
+  GuildEdit: 'GUILD_EDIT',
+  GuildRemove: 'GUILD_REMOVE',
+
+  UserAdd: 'USER_ADD',
+  UserEdit: 'USER_EDIT',
+  UserRemove: 'USER_REMOVE',
+  UserRoleAdd: 'USER_ROLE_ADD',
+  UserRoleRemove: 'USER_ROLE_REMOVE',
+  UserGuildAdd: 'USER_GUILD_ADD',
+  UserGuildRemove: 'USER_GUILD_REMOVE',
+
+  PartnerAdd: 'PARTNER_ADD',
+  PartnerEdit: 'PARTNER_EDIT',
+  PartnerRemove: 'PARTNER_REMOVE',
+}
+
+for (const key in Events) {
+  Events[Events[key]] = key;
+}
+
+
+class Client extends EventEmitter {
   constructor(base, token) {
-    this.rest = new Rest(base, token);
+    super();
     this.base = base;
     this.token = token;
+    this.rest = new Rest(base, token);
+    this.guilds = new Map();
+    this.users = new Map();
+    this.parters = new Map();
+  }
+
+
+  async connect() {
+    return new Promise((resolve, reject) => {
+      this.socket = new WebSocket(`${this.base.replace('http', 'ws')}/socket`, {
+        headers: { 'Authorization': this.token },
+      });
+      this.socket.on('open', resolve);
+      this.socket.on('error', reject);
+      this.socket.on('message', payload => {
+        const { event, data } = JSON.parse(payload);
+        
+        switch (event) {
+          case events.Init: {
+            for (const guild of data.guilds) this.guilds.set(guild.id, guild);
+            for (const user of data.users) this.users.set(user.id, user);
+            for (const partner of data.partners) this.partners.set(partner.name, partner);
+            return this.emit(event, this);
+          }
+  
+          case events.GuildAdd: {
+            this.guilds.set(data.id, data);
+            return this.emit(event, data);
+          }
+  
+          case events.GuildEdit: {
+            const guild = this.guilds.get(data.id);
+            Object.assign(guild, data);
+            return this.emit(event, guild);
+          }
+  
+          case events.GuildRemove: {
+            const guild = this.guilds.get(data.id);
+            this.guilds.delete(guild.id);
+            return this.emit(event, guild);
+          }
+  
+          case events.UserAdd: {
+            this.users.set(data.id, data);
+            return this.emit(event, data);
+          }
+  
+          case events.UserEdit: {
+            const user = this.users.get(data.id);
+            Object.assign(user, data);
+            return this.emit(event, user);
+          }
+  
+          case events.UserRemove: {
+            const user = this.users.get(data.id);
+            this.users.delete(user.id);
+            return this.emit(event, user);
+          }
+  
+          case events.UserRoleAdd: {
+            const user = this.users.get(data.user);
+            user.roles.push(data.role);
+            return this.emit(event, user, role);
+          }
+  
+          case events.UserRoleRemove: {
+            const user = this.users.get(data.user);
+            const index = user.roles.indexOf(data.role);
+            if (index > -1) user.roles.splice(index, 1);
+            return this.emit(event, user, role);
+          }
+  
+          case events.UserGuildAdd: {
+            const user = this.users.get(data.user);
+            user.guilds.push(data.guild);
+            return this.emit(event, user, this.guilds.get(data.guild) || data.guild);
+          }
+  
+          case events.UserGuildRemove: {
+            const user = this.users.get(data.user);
+            const index = user.guilds.indexOf(data.guild);
+            if (index > -1) user.guilds.splice(index, 1);
+            return this.emit(event, user, this.guilds.get(data.guild) || data.guild);
+          }
+  
+          case events.PartnerAdd: {
+            this.partners.set(data.name, data);
+            return this.emit(event, data);
+          }
+  
+          case events.PartnerEdit: {
+            const partner = this.partners.get(data.name);
+            Object.assign(partner, data);
+            return this.emit(event, partner);
+          }
+  
+          case events.PartnerRemove: {
+            const partner = this.partners.get(data.name);
+            this.partners.delete(partner.name);
+            return this.emit(event, partner);
+          }
+        }
+      });
+    });
   }
 
 
@@ -63,7 +195,7 @@ class Client {
     return this.rest.get('/guilds');
   }
 
-  async createGuild(data) {
+  async addGuild(data) {
     return this.rest.post('/guilds', data);
   }
   
@@ -75,7 +207,7 @@ class Client {
     return this.rest.patch('/guilds/' + id, data);
   }
 
-  async deleteGuild(id) {
+  async removeGuild(id) {
     return this.rest.delete('/guilds/' + id);
   }
 
@@ -84,7 +216,7 @@ class Client {
     return this.rest.get('/users');
   }
 
-  async createUser(data) {
+  async addUser(data) {
     return this.rest.post('/users', data);
   }
 
@@ -96,7 +228,7 @@ class Client {
     return this.rest.patch('/users/' + id, data);
   }
 
-  async deleteUser(id) {
+  async removeUser(id) {
     return this.rest.delete('/users/' + id);
   }
   
@@ -117,7 +249,28 @@ class Client {
   async removeUserRole(id, role) {
     return this.rest.delete(`/users/${id}/roles`, { role });
   }
+
+
+  async fetchPartners() {
+    return this.rest.get('/partners');
+  }
+
+  async addPartner(data) {
+    return this.rest.post('/partners', data);
+  }
+
+  async fetchPartner(id) {
+    return this.rest.get('/partners/' + id);
+  }
+
+  async editPartner(id, data) {
+    return this.rest.patch('/partners/' + id, data);
+  }
+
+  async removePartner(id) {
+    return this.rest.delete('/partners/' + id);
+  }
 }
 
 
-module.exports = Client;
+module.exports = { Client, Events };
